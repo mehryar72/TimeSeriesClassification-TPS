@@ -1,6 +1,6 @@
 Code for :
 
-Attention Enhanced Time Series Classification: An approach for implantation outcome prediction in time-lapse human embryo image sequences
+Temporal Attention Block for Augmenting Deep Multivariate Time Series Classification
 
 python 3.6
 torch 1.2.0
