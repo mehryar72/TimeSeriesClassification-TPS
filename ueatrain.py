@@ -47,20 +47,9 @@ parser.add_argument('--adaH', type=int, default=0)
 parser.add_argument('--n_layers', type=int, default=1)
 parser.add_argument('--pos_enc', type=int, default=2)#1,2
 parser.add_argument('--ffh', type=int, default=4)#-4,-2,0,2,4
-# args = parser.parse_args()
-# load the train and test dataset
-"""
-samples = []
-f = open("./data/annotations.txt").readlines()
-w = open("./result/final_result.txt", 'w')
-for line in f:
-    items = line.strip().split(' ')
-    samples.append((items[0], float(items[1])))
-"""
-# w = open('./logs/merge_tes_40attn.log', 'w')
-# loss_log = open('./loss_log/' + '{}'.format(args.mode) + '.txt', 'w+')
+
 from scipy.ndimage.filters import uniform_filter1d
-# import ruptures as rpt
+
 class find_low_change_sec:
     def __init__(self,mode=0,mean_zero=False, ends_only=True):
         self.mode=mode
@@ -82,20 +71,19 @@ class find_low_change_sec:
             signal_diff=np.diff(signal,axis=1)
             signal_diff=np.concatenate((signal_diff[:,0:1],signal_diff),axis=1)
             signal_diff=np.abs(signal_diff)
-            # print(signal_diff[0,:])
+
             var_mat=np.std(signal_diff,axis=1).repeat(signal.shape[1]).reshape(signal.shape)
-            # print(var_mat[0,:])
+
             mask[signal_diff<var_mat/10]=0
             mask=np.max(mask,axis=0)
             mask = self.smooth_mask_matrix(mask_matrix=mask)
             mask2=np.zeros(signal.shape)
             mask2[signal_diff>var_mat/4]=1
             mask2=np.max(mask2,axis=0)
-            # print(mask)
-            # print(mask2)
+
             mask= mask + mask2
             mask[mask>0]=1
-            # print(mask)
+
         # elif self.mode==1:
         #     algo=rpt.Pelt(model="rbf").fit(signal)
         #     cp=algo.predict(pen=0.01)
@@ -149,18 +137,13 @@ class MyDataset(uea_ucr_datasets.Dataset):
         else:
             mask=self.mask_dict[index]
         if self.max_len:
-            # print(self.max_len)
-            # print(len(mask))
-            # print(mask[:,0].sum())
-            # de=np.pad(mask, ((0, self.max_len - len(instance_x)), (0, 0)))
-            # print(de[:,0].sum())
-            # print((de[:,0]==0).sum())
+
             return np.pad(np.nan_to_num(instance_x.astype(np.float32)), ((0, self.max_len - len(instance_x)), (0, 0))), instance_y ,np.pad(mask, ((0, self.max_len - len(instance_x)), (0, 0)))
         else:
             return np.nan_to_num(instance_x.astype(np.float32)), instance_y, mask
 
 def reslog(line):
-    with open(r'/home/mabbasib/UEA/logs/acc_sp.csv', 'a', newline='') as f:
+    with open(r'./logs/acc_sp.csv', 'a', newline='') as f:
         writer = csv.writer(f)
         writer.writerow(line)
         f.close()
@@ -173,11 +156,7 @@ def train_shuffle(logger,min_mse=200, max_corr=0,n_epochs=100,batchsize=64,ffh=4
         
         div=2
     
-    # random.shuffle(f)
-    # train = samples[:100]
-    # test = samples[100:]
-    # trainset = videoDataset(root=args.root,
-    #                         label="./data/train_dataset.txt", suffix=".npy", transform=transform, data=None, pcss=args.pcs)
+
     trainset=MyDataset(list_dta[args.no], train=True)
 
 
@@ -324,7 +303,7 @@ if __name__ == '__main__':
     min_mse = 200
     max_corr = 0
     args = parser.parse_args()
-    name = '/scratch/mabbasib/UEA_sp/log_' + list_dta[args.no] + '_{}_'.format(args.mode) + (''.join(sys.argv[1:]))
+    name = './logs/log_' + list_dta[args.no] + '_{}_'.format(args.mode) + (''.join(sys.argv[1:]))
     logF = name + '.csv'
     print(list_dta[args.no])
     if args.no==22:
