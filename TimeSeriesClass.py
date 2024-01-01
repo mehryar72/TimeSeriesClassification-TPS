@@ -1,5 +1,28 @@
+import os
+import glob
+
 import torch
 import torch.nn as nn
+from torch.utils.data import Dataset
+import numpy as np
+from PIL import Image, ImageDraw, ImageOps, ImageChops
+
+import random
+from itertools import islice
+from random import shuffle
+import torch.nn.functional as F
+# import cv2
+import torchvision.models as models
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+
+# from modelZoo import *
+# from MYRESNO import _resnet
+# from MYRESNO import BasicBlock, BasicBlockN, SEBasicBlock, BasicBlock1, conv1x1
+# from MYRESNO import Bottleneck, BottleneckN, SEBottleneck
+from collections import OrderedDict
+from BERT.bert import BERT, BERT2, BERT3, BERT4, BERT5, BERT6, BERTEmbedding2, BERTEmbedding
+from BERT.attention import MultiHeadedAttention, MultiHeadedAttention2
+from BERT.utils import SublayerConnection, PositionwiseFeedForward, SublayerConnection2
 
 
 class BasicBlock1D(nn.Module):
@@ -22,17 +45,14 @@ class BasicBlock1D(nn.Module):
 
         return out
 
-
 class BasicBlock1D_Dil(nn.Module):
     expansion = 1
 
-    def __init__(self, inplanes, planes, stride=1, downsample=None, norm_layer=None, kernel_size=8, padding=3,
-                 Dilation=1):
+    def __init__(self, inplanes, planes, stride=1, downsample=None, norm_layer=None, kernel_size=8, padding=3,Dilation=1):
         super(BasicBlock1D_Dil, self).__init__()
         if norm_layer is None:
             norm_layer = nn.BatchNorm1d
-        self.conv1 = nn.Conv1d(in_channels=inplanes, out_channels=planes, kernel_size=kernel_size, padding=padding,
-                               dilation=Dilation)
+        self.conv1 = nn.Conv1d(in_channels=inplanes, out_channels=planes, kernel_size=kernel_size, padding=padding,dilation=Dilation)
         self.bn1 = norm_layer(planes, momentum=0.01)
         self.relu = nn.ReLU(inplace=True)
         self.downsample = downsample
@@ -44,7 +64,6 @@ class BasicBlock1D_Dil(nn.Module):
         out = self.relu(out)
 
         return out
-
 
 class ResBlock1D(nn.Module):
     expansion = 1
@@ -106,23 +125,19 @@ class Classifier_FCN(nn.Module):
         x = self.AVG(x)
         return x
 
-
 class Classifier_FCN_Dil(nn.Module):
 
-    def __init__(self, input_shape, D=1, Dil=4):
+    def __init__(self, input_shape, D=1,Dil=4):
         super(Classifier_FCN_Dil, self).__init__()
 
         self.input_shape = input_shape
         self.out_shape = int(128 / D)
         # self.conv0 = BasicBlock1D(inplanes=input_shape, planes=32, kernel_size=1, padding=0)
-        self.conv1 = BasicBlock1D_Dil(inplanes=input_shape, planes=int(128 / D), kernel_size=8,
-                                      padding=int((8 - 1) * Dil / 2), Dilation=Dil)
+        self.conv1 = BasicBlock1D_Dil(inplanes=input_shape, planes=int(128 / D), kernel_size=8, padding=int((8-1)*Dil/2),Dilation=Dil)
 
-        self.conv2 = BasicBlock1D_Dil(inplanes=int(128 / D), planes=int(256 / D), kernel_size=5,
-                                      padding=int((5 - 1) * Dil / 2), Dilation=Dil)
+        self.conv2 = BasicBlock1D_Dil(inplanes=int(128 / D), planes=int(256 / D), kernel_size=5, padding=int((5-1)*Dil/2),Dilation=Dil)
 
-        self.conv3 = BasicBlock1D_Dil(inplanes=int(256 / D), planes=int(128 / D), kernel_size=3,
-                                      padding=int((3 - 1) * Dil / 2), Dilation=Dil)
+        self.conv3 = BasicBlock1D_Dil(inplanes=int(256 / D), planes=int(128 / D), kernel_size=3, padding=int((3-1)*Dil/2),Dilation=Dil)
 
         self.AVG = nn.AdaptiveAvgPool1d(1)
 
@@ -203,14 +218,14 @@ class Se1Block_drop(nn.Module):
         y = self.fc(y).view(b, c, 1)
         return x * y.expand_as(x)
 
-
 class Se1Block_dropB(nn.Module):
 
-    def __init__(self, channel, length, reduction=16):
+    def __init__(self, channel,length, reduction=16):
         super(Se1Block_dropB, self).__init__()
 
-        self.fc0 = nn.Sequential(nn.Linear(channel, 1, bias=False),
-                                 nn.ReLU(inplace=True)
+        self.fc0 = nn.Sequential(nn.Linear(channel,1,bias=False),
+                                 #nn.ReLU(inplace=True)
+                                 nn.Sigmoid()
                                  )
         self.fc = nn.Sequential(
             nn.Linear(length, length // reduction, bias=False),
@@ -220,12 +235,16 @@ class Se1Block_dropB(nn.Module):
         )
         self.drop = nn.Dropout(p=0.2)
 
-    def forward(self, x):
+    def forward(self, x,mask):
         b, l, _ = x.size()
-        y = self.fc0(x).view(b, l)
+        y = self.fc0(x).view(b, l).masked_fill(mask[:,:,0]==0,1e-9)
         y = self.drop(y)
         y = self.fc(y).view(b, l, 1)
-        return x * y.expand_as(x)
+        # print(x.shape)
+        # print(mask.shape)
+        # print(y.shape)
+        # print(mask[:,:,0].shape)
+        return x.masked_fill((mask[:,:,0:1]==0).expand_as(x),1e-9) * y.expand_as(x)
 
 
 class Se2Block_drop(nn.Module):
@@ -261,6 +280,8 @@ class FTABlock(nn.Module):
         input = torch.stack([input, torch.zeros_like(input)], -1)
         return input
 
+
+
     # def forward(self,x):
     #     BS = x.shape
     #     xf = torch.fft(self._addRI(x),2)
@@ -275,50 +296,66 @@ class FTABlock(nn.Module):
         x = x.permute(0, 2, 1)
         return x
 
-
 class FTABlock_H(nn.Module):
 
-    def __init__(self, channel=24, reduction=16, h=4):
+    def __init__(self, channel=24, reduction=16,h=4):
         super(FTABlock_H, self).__init__()
         # self.SE=Se1Block(channel, reduction=reduction)
-        assert channel % h == 0
-        self.SE = nn.ModuleList(Se1Block_drop(channel // h, reduction=reduction) for _ in range(h))
-        self.h = h
+        assert channel%h ==0
+        self.SE = nn.ModuleList(Se1Block_drop(channel//h, reduction=reduction) for _ in range(h))
+        self.h=h
 
     def forward(self, x):
-        z = []
-        xs = x.shape
+        z=[]
+        xs=x.shape
         x = x.permute(0, 2, 1)
-        x = x.contiguous().view(xs[0], self.h, -1, xs[1])
-        for i, SE in enumerate(self.SE):
-            z.append(SE(x[:, i, :, :]))
-        x = torch.cat(z, dim=1)
+        x = x.contiguous().view(xs[0],self.h,-1,xs[1])
+        for i,SE in enumerate(self.SE):
+            z.append(SE(x[:,i,:,:]))
+        x = torch.cat(z,dim=1)
         x = x.contiguous().view(xs[0], -1, xs[1])
         x = x.permute(0, 2, 1)
         return x
 
-
 class FTABlockB(nn.Module):
 
-    def __init__(self, channel=64, length=24, reduction=16):
+    def __init__(self, channel=64,length=24, reduction=16):
         super(FTABlockB, self).__init__()
         # self.SE=Se1Block(channel, reduction=reduction)
-        self.SE = Se1Block_dropB(channel=channel, length=length, reduction=reduction)
+        self.SE = Se1Block_dropB(channel=channel,length=length, reduction=reduction)
 
     def _addRI(self, input):
         input = torch.stack([input, torch.zeros_like(input)], -1)
         return input
 
-    def forward(self, x):
+    def forward(self, x,mask):
         x = x.permute(0, 2, 1)
-        x = self.SE(x)
+        mask = mask.permute(0,2,1)
+        x = self.SE(x,mask)
         x = x.permute(0, 2, 1)
         return x
 
+class CTABlock(nn.Module):
 
+    def __init__(self, channel=64, reduction=16):
+        super(CTABlock, self).__init__()
+        # self.SE=Se1Block(channel, reduction=reduction)
+        self.fc = nn.Sequential(
+            nn.Linear(channel, channel // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(channel // reduction, 1, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        b, c, L = x.size()
+        y = x.permute(0, 2, 1)
+        y = self.fc(y).view(b, L, 1).permute(0,2,1)
+        return x * y.expand_as(x)
+    
 class FTABlockB_H(nn.Module):
 
-    def __init__(self, channel=64, length=24, reduction=16, h=4):
+    def __init__(self, channel=64,length=24, reduction=16,h=4):
         super(FTABlockB_H, self).__init__()
         # self.SE=Se1Block(channel, reduction=reduction)
         assert length % h == 0
@@ -336,7 +373,6 @@ class FTABlockB_H(nn.Module):
         x = x.contiguous().view(xs[0], -1, xs[1])
         x = x.permute(0, 2, 1)
         return x
-
 
 class FTABlock2(nn.Module):
 
@@ -366,21 +402,21 @@ class FTABlock2(nn.Module):
 
 class Classifier_FCN_FTA(nn.Module):
 
-    def __init__(self, input_shape, D=1, length=24, ffh=16):
+    def __init__(self, input_shape, D=1, length=24,ffh=16):
         super(Classifier_FCN_FTA, self).__init__()
 
         self.input_shape = input_shape
         self.out_shape = int(128 / D)
 
-        # self.embedding = BERTEmbedding2(input_dim=input_shape, max_len=length)
+        #self.embedding = BERTEmbedding2(input_dim=input_shape, max_len=length)
         self.conv1 = BasicBlock1D(inplanes=input_shape, planes=int(128 / D), kernel_size=8, padding=3)
-        self.FTA1 = FTABlock(channel=length - 1, reduction=ffh)
+        self.FTA1 = FTABlock(channel=length-1,reduction=ffh)
 
         self.conv2 = BasicBlock1D(inplanes=int(128 / D), planes=int(256 / D), kernel_size=5, padding=2)
-        self.FTA2 = FTABlock(channel=length - 1, reduction=ffh)
+        self.FTA2 = FTABlock(channel=length-1,reduction=ffh)
 
         self.conv3 = BasicBlock1D(inplanes=int(256 / D), planes=int(128 / D), kernel_size=3, padding=1)
-        self.FTA3 = FTABlock(channel=length - 1, reduction=ffh)
+        self.FTA3 = FTABlock(channel=length-1,reduction=ffh)
 
         self.AVG = nn.AdaptiveAvgPool1d(1)
 
@@ -395,7 +431,37 @@ class Classifier_FCN_FTA(nn.Module):
         x = self.AVG(x)
         return x
 
+class Classifier_FCN_CTA(nn.Module):
 
+    def __init__(self, input_shape, D=1, length=24,ffh=16):
+        super(Classifier_FCN_CTA, self).__init__()
+
+        self.input_shape = input_shape
+        self.out_shape = int(128 / D)
+
+        #self.embedding = BERTEmbedding2(input_dim=input_shape, max_len=length)
+        self.conv1 = BasicBlock1D(inplanes=input_shape, planes=int(128 / D), kernel_size=7, padding=3)
+        self.FTA1 = CTABlock(channel=int(128 / D),reduction=ffh)
+
+        self.conv2 = BasicBlock1D(inplanes=int(128 / D), planes=int(256 / D), kernel_size=5, padding=2)
+        self.FTA2 = CTABlock(channel=int(256 / D),reduction=ffh)
+
+        self.conv3 = BasicBlock1D(inplanes=int(256 / D), planes=int(128 / D), kernel_size=3, padding=1)
+        self.FTA3 = CTABlock(channel=int(128 / D),reduction=ffh)
+
+        self.AVG = nn.AdaptiveAvgPool1d(1)
+
+    def forward(self, x):
+        # x = self.embedding(x.permute(0, 2, 1)).permute(0, 2, 1)
+        x = self.conv1(x)
+        x = self.FTA1(x)
+        x = self.conv2(x)
+        x = self.FTA2(x)
+        x = self.conv3(x)
+        x = self.FTA3(x)
+        x = self.AVG(x)
+        return x
+    
 class Classifier_FCN_FTA_E(nn.Module):
 
     def __init__(self, input_shape, D=1, length=24):
@@ -404,33 +470,32 @@ class Classifier_FCN_FTA_E(nn.Module):
         self.input_shape = input_shape
         self.out_shape = int(128 / D)
 
-        # self.embedding = BERTEmbedding2(input_dim=input_shape, max_len=length)
+        #self.embedding = BERTEmbedding2(input_dim=input_shape, max_len=length)
         self.conv1 = BasicBlock1D(inplanes=input_shape, planes=int(128 / D), kernel_size=8, padding=3)
-        # self.FTA1 = FTABlock(channel=length-1)
+        #self.FTA1 = FTABlock(channel=length-1)
 
         self.conv2 = BasicBlock1D(inplanes=int(128 / D), planes=int(256 / D), kernel_size=5, padding=2)
-        # self.FTA2 = FTABlock(channel=length-1)
+        #self.FTA2 = FTABlock(channel=length-1)
 
         self.conv3 = BasicBlock1D(inplanes=int(256 / D), planes=int(128 / D), kernel_size=3, padding=1)
-        self.FTA3 = FTABlock(channel=length - 1)
+        self.FTA3 = FTABlock(channel=length-1)
 
         self.AVG = nn.AdaptiveAvgPool1d(1)
 
     def forward(self, x):
         # x = self.embedding(x.permute(0, 2, 1)).permute(0, 2, 1)
         x = self.conv1(x)
-        # x = self.FTA1(x)
+        #x = self.FTA1(x)
         x = self.conv2(x)
-        # x = self.FTA2(x)
+        #x = self.FTA2(x)
         x = self.conv3(x)
         x = self.FTA3(x)
         x = self.AVG(x)
         return x
 
-
 class Classifier_FCN_FTA_B(nn.Module):
 
-    def __init__(self, input_shape, D=1, length=24, ffh=16):
+    def __init__(self, input_shape, D=1, length=24,ffh=16):
         super(Classifier_FCN_FTA_B, self).__init__()
 
         self.input_shape = input_shape
@@ -438,27 +503,26 @@ class Classifier_FCN_FTA_B(nn.Module):
 
         self.embedding = BERTEmbedding2(input_dim=input_shape, max_len=length)
         self.conv1 = BasicBlock1D(inplanes=input_shape, planes=int(128 / D), kernel_size=7, padding=3)
-        self.FTA1 = FTABlockB(channel=int(128 / D), length=length, reduction=ffh)
+        self.FTA1 = FTABlockB(channel=int(128 / D),length=length,reduction=ffh)
 
         self.conv2 = BasicBlock1D(inplanes=int(128 / D), planes=int(256 / D), kernel_size=5, padding=2)
-        self.FTA2 = FTABlockB(channel=int(256 / D), length=length, reduction=ffh)
+        self.FTA2 = FTABlockB(channel=int(256 / D),length=length,reduction=ffh)
 
         self.conv3 = BasicBlock1D(inplanes=int(256 / D), planes=int(128 / D), kernel_size=3, padding=1)
-        self.FTA3 = FTABlockB(channel=int(128 / D), length=length, reduction=ffh)
+        self.FTA3 = FTABlockB(channel=int(128 / D),length=length,reduction=ffh)
 
         self.AVG = nn.AdaptiveAvgPool1d(1)
 
-    def forward(self, x):
+    def forward(self, x,mask):
         # x = self.embedding(x.permute(0, 2, 1)).permute(0, 2, 1)
         x = self.conv1(x)
-        x = self.FTA1(x)
+        x = self.FTA1(x,mask)
         x = self.conv2(x)
-        x = self.FTA2(x)
+        x = self.FTA2(x,mask)
         x = self.conv3(x)
-        x = self.FTA3(x)
+        x = self.FTA3(x,mask)
         x = self.AVG(x)
         return x
-
 
 class Classifier_FCN_FTA_B_E(nn.Module):
 
@@ -470,31 +534,30 @@ class Classifier_FCN_FTA_B_E(nn.Module):
 
         self.embedding = BERTEmbedding2(input_dim=input_shape, max_len=length)
         self.conv1 = BasicBlock1D(inplanes=input_shape, planes=int(128 / D), kernel_size=7, padding=3)
-        # self.FTA1 = FTABlockB(channel=int(128 / D),length=length)
+        #self.FTA1 = FTABlockB(channel=int(128 / D),length=length)
 
         self.conv2 = BasicBlock1D(inplanes=int(128 / D), planes=int(256 / D), kernel_size=5, padding=2)
-        # self.FTA2 = FTABlockB(channel=int(256 / D),length=length)
+        #self.FTA2 = FTABlockB(channel=int(256 / D),length=length)
 
         self.conv3 = BasicBlock1D(inplanes=int(256 / D), planes=int(128 / D), kernel_size=3, padding=1)
-        self.FTA3 = FTABlockB(channel=int(128 / D), length=length)
+        self.FTA3 = FTABlockB(channel=int(128 / D),length=length)
 
         self.AVG = nn.AdaptiveAvgPool1d(1)
 
     def forward(self, x):
         # x = self.embedding(x.permute(0, 2, 1)).permute(0, 2, 1)
         x = self.conv1(x)
-        # x = self.FTA1(x)
+        #x = self.FTA1(x)
         x = self.conv2(x)
-        # x = self.FTA2(x)
+        #x = self.FTA2(x)
         x = self.conv3(x)
         x = self.FTA3(x)
         x = self.AVG(x)
         return x
 
-
 class Classifier_FCN_FTA_H(nn.Module):
 
-    def __init__(self, input_shape, D=1, length=24, h=4):
+    def __init__(self, input_shape, D=1, length=24,h=4):
         super(Classifier_FCN_FTA_H, self).__init__()
 
         self.input_shape = input_shape
@@ -502,13 +565,13 @@ class Classifier_FCN_FTA_H(nn.Module):
 
         self.embedding = BERTEmbedding2(input_dim=input_shape, max_len=length)
         self.conv1 = BasicBlock1D(inplanes=input_shape, planes=int(128 / D), kernel_size=7, padding=3)
-        self.FTA1 = FTABlock_H(channel=length, h=h)
+        self.FTA1 = FTABlock_H(channel=length,h=h)
 
         self.conv2 = BasicBlock1D(inplanes=int(128 / D), planes=int(256 / D), kernel_size=5, padding=2)
-        self.FTA2 = FTABlock_H(channel=length, h=h)
+        self.FTA2 = FTABlock_H(channel=length,h=h)
 
         self.conv3 = BasicBlock1D(inplanes=int(256 / D), planes=int(128 / D), kernel_size=3, padding=1)
-        self.FTA3 = FTABlock_H(channel=length, h=h)
+        self.FTA3 = FTABlock_H(channel=length,h=h)
 
         self.AVG = nn.AdaptiveAvgPool1d(1)
 
@@ -523,10 +586,9 @@ class Classifier_FCN_FTA_H(nn.Module):
         x = self.AVG(x)
         return x
 
-
 class Classifier_E_FTA_B(nn.Module):
 
-    def __init__(self, input_shape, D=1, length=24, ffh=16):
+    def __init__(self, input_shape, D=1, length=24,ffh=16):
         super(Classifier_E_FTA_B, self).__init__()
 
         self.input_shape = input_shape
@@ -547,7 +609,7 @@ class Classifier_E_FTA_B(nn.Module):
                 nn.ReLU(),
             )
 
-        self.FTA = FTABlockB(channel=int(128 / D), length=length, reduction=ffh)
+        self.FTA = FTABlockB(channel=int(128 / D),length=length,reduction=ffh)
 
         self.AVG = nn.AdaptiveAvgPool1d(1)
 
@@ -558,7 +620,6 @@ class Classifier_E_FTA_B(nn.Module):
         x = self.FTA(x)
         x = self.AVG(x)
         return x
-
 
 class Classifier_E_CTA_B(nn.Module):
 
@@ -583,7 +644,7 @@ class Classifier_E_CTA_B(nn.Module):
                 nn.ReLU(),
             )
 
-        self.FTA = CTABlockB(channel=int(128 / D), length=length)
+        self.FTA = CTABlockB(channel=int(128 / D),length=length)
 
         self.AVG = nn.AdaptiveAvgPool1d(1)
 
@@ -595,8 +656,7 @@ class Classifier_E_CTA_B(nn.Module):
         x = self.AVG(x)
         return x
 
-
-# class CTABlockB(nn.Module):
+#class CTABlockB(nn.Module):
 
 #    def __init__(self, channel=64,length=24, reduction=16):
 #        super(CTABlockB, self).__init__()
@@ -619,13 +679,13 @@ class Classifier_E_CTA_B(nn.Module):
 
 class CTABlockB(nn.Module):
 
-    def __init__(self, channel=64, length=24, reduction=16):
+    def __init__(self, channel=64,length=24, reduction=16):
         super(CTABlockB, self).__init__()
         # self.SE=Se1Block(channel, reduction=reduction)
         # self.SE = Se1Block_dropB(channel=channel,length=length, reduction=reduction)
-        self.fc0 = nn.Sequential(nn.Linear(channel, channel // reduction, bias=False),
+        self.fc0 = nn.Sequential(nn.Linear(channel, channel//reduction, bias=False),
                                  nn.ReLU(),
-                                 nn.Linear(channel // reduction, 1, bias=False),
+                                 nn.Linear(channel//reduction, 1, bias=False),
                                  nn.Sigmoid()
                                  )
 
@@ -635,12 +695,11 @@ class CTABlockB(nn.Module):
 
     def forward(self, x):
         x = x.permute(0, 2, 1)
-        x = x * self.fc0(x).expand_as(x)
+        x = x*self.fc0(x).expand_as(x)
 
         x = x.permute(0, 2, 1)
         return x
-
-
+        
 class Classifier_FCN_CTA_B(nn.Module):
 
     def __init__(self, input_shape, D=1, length=24):
@@ -648,6 +707,8 @@ class Classifier_FCN_CTA_B(nn.Module):
 
         self.input_shape = input_shape
         self.out_shape = int(128 / D)
+
+
 
         self.conv1 = BasicBlock1D(inplanes=input_shape, planes=int(128 / D), kernel_size=7, padding=3)
         self.FTA1 = CTABlockB(channel=int(128 / D), length=length)
@@ -657,6 +718,7 @@ class Classifier_FCN_CTA_B(nn.Module):
 
         self.conv3 = BasicBlock1D(inplanes=int(256 / D), planes=int(128 / D), kernel_size=3, padding=1)
         self.FTA3 = CTABlockB(channel=int(128 / D), length=length)
+
 
         # self.FTA = CTABlockB(channel=int(128 / D), length=length)
 
@@ -674,11 +736,10 @@ class Classifier_FCN_CTA_B(nn.Module):
         x = self.FTA3(x)
         x = self.AVG(x)
         return x
-
-
+        
 class Classifier_FCN_FTA_B_H(nn.Module):
 
-    def __init__(self, input_shape, D=1, length=24, h=4):
+    def __init__(self, input_shape, D=1, length=24,h=4):
         super(Classifier_FCN_FTA_B_H, self).__init__()
 
         self.input_shape = input_shape
@@ -686,13 +747,13 @@ class Classifier_FCN_FTA_B_H(nn.Module):
 
         self.embedding = BERTEmbedding2(input_dim=input_shape, max_len=length)
         self.conv1 = BasicBlock1D(inplanes=input_shape, planes=int(128 / D), kernel_size=7, padding=3)
-        self.FTA1 = FTABlockB_H(channel=int(128 / D), length=length, h=h)
+        self.FTA1 = FTABlockB_H(channel=int(128 / D),length=length,h=h)
 
         self.conv2 = BasicBlock1D(inplanes=int(128 / D), planes=int(256 / D), kernel_size=5, padding=2)
-        self.FTA2 = FTABlockB_H(channel=int(256 / D), length=length, h=h)
+        self.FTA2 = FTABlockB_H(channel=int(256 / D),length=length,h=h)
 
         self.conv3 = BasicBlock1D(inplanes=int(256 / D), planes=int(128 / D), kernel_size=3, padding=1)
-        self.FTA3 = FTABlockB_H(channel=int(128 / D), length=length, h=h)
+        self.FTA3 = FTABlockB_H(channel=int(128 / D),length=length,h=h)
 
         self.AVG = nn.AdaptiveAvgPool1d(1)
 
@@ -741,7 +802,6 @@ class Classifier_FCN_FTA2(nn.Module):
         x = self.AVG(x)
         return x
 
-
 class Classifier_FCN_FTAMHA1(nn.Module):
 
     def __init__(self, input_shape, D=1, length=24):
@@ -785,7 +845,6 @@ class Classifier_FCN_FTAMHA1(nn.Module):
         x = self.AVG(x)
         return x
 
-
 class Classifier_FCN_FTA22(nn.Module):
 
     def __init__(self, input_shape, D=1, length=24):
@@ -818,7 +877,6 @@ class Classifier_FCN_FTA22(nn.Module):
         # x = self.FTA3(x)
         x = self.AVG(x)
         return x
-
 
 class Classifier_FCN_FTA23(nn.Module):
 
@@ -853,7 +911,6 @@ class Classifier_FCN_FTA23(nn.Module):
         x = self.AVG(x)
         return x
 
-
 class Classifier_FCN_FTA24(nn.Module):
 
     def __init__(self, input_shape, D=1, length=24):
@@ -886,7 +943,6 @@ class Classifier_FCN_FTA24(nn.Module):
         # x = self.FTA3(x)
         x = self.AVG(x)
         return x
-
 
 class MHA(nn.Module):
     """
@@ -1153,7 +1209,7 @@ class Classifier_FCN_MHA5(nn.Module):
     def forward(self, x):
         batch_size = x.shape[0]
         input_vectors = x
-        norm = input_vectors.norm(p=2, dim=-2, keepdim=True)  # it on the feature dimentsion not time
+        norm = input_vectors.norm(p=2, dim=-2, keepdim=True) # it on the feature dimentsion not time
         x = input_vectors.div(norm)
 
         if self.training:
@@ -1194,7 +1250,7 @@ class Classifier_BERT(nn.Module):
                           attn_heads=self.attn_heads)
         self.out_shape = self.hidden_size
         if input_shape >= hidden_size:
-            # if hidden_size>=128:
+                # if hidden_size>=128:
             self.embedding = nn.Sequential(
                 nn.Linear(input_shape, input_shape // 2),
                 nn.ReLU(),
@@ -1202,7 +1258,7 @@ class Classifier_BERT(nn.Module):
                 nn.ReLU(),
             )
             self.hidden_size = hidden_size
-
+            
         else:
             self.embedding = nn.Sequential(
                 nn.Linear(input_shape, input_shape * 2),
@@ -1211,7 +1267,7 @@ class Classifier_BERT(nn.Module):
                 nn.ReLU(),
             )
             self.hidden_size = hidden_size
-
+            
     def forward(self, x):
         x = x.permute(0, 2, 1)
         x = self.embedding(x)
@@ -1246,10 +1302,9 @@ class Classifier_RESNET(nn.Module):
         x = self.AVG(x)
         return x
 
-
 class Classifier_RESNET_MH1(nn.Module):
 
-    def __init__(self, input_shape, D=1, length=96):
+    def __init__(self, input_shape, D=1,length=96):
         super(Classifier_RESNET_MH1, self).__init__()
         self.out_shape = int(128 / D)
         self.blk1 = ResBlock1D(input_shape, int(64 / D))
@@ -1263,7 +1318,7 @@ class Classifier_RESNET_MH1(nn.Module):
         self.embedding = BERTEmbedding2(input_dim=input_shape, max_len=length)
 
         # self.conv1 = BasicBlock1D(inplanes=input_shape, planes=int(128 / D), kernel_size=7, padding=3)
-        self.MHA1 = MHA(int(128 / D), self.attheads, self.drop)
+        self.MHA1 = MHA(int(128/D),self.attheads,self.drop)
 
     def forward(self, x):
         batch_size = x.shape[0]
@@ -1284,10 +1339,9 @@ class Classifier_RESNET_MH1(nn.Module):
         x = self.AVG(x)
         return x
 
-
 class Classifier_RESNET_MH2(nn.Module):
 
-    def __init__(self, input_shape, D=1, length=96):
+    def __init__(self, input_shape, D=1,length=96):
         super(Classifier_RESNET_MH2, self).__init__()
         self.out_shape = int(128 / D)
         self.blk1 = ResBlock1D(input_shape, int(64 / D))
@@ -1324,10 +1378,9 @@ class Classifier_RESNET_MH2(nn.Module):
         x = self.AVG(x)
         return x
 
-
 class Classifier_RESNET_MH3(nn.Module):
 
-    def __init__(self, input_shape, D=1, length=96):
+    def __init__(self, input_shape, D=1,length=96):
         super(Classifier_RESNET_MH3, self).__init__()
         self.out_shape = int(128 / D)
         self.blk1 = ResBlock1D(input_shape, int(64 / D))
@@ -1341,11 +1394,12 @@ class Classifier_RESNET_MH3(nn.Module):
         self.embedding = BERTEmbedding2(input_dim=input_shape, max_len=length)
 
         # self.conv1 = BasicBlock1D(inplanes=input_shape, planes=int(128 / D), kernel_size=7, padding=3)
-        self.MHA1 = MHA(int(128 / D), self.attheads, self.drop)
+        self.MHA1 = MHA(int(128/D),self.attheads,self.drop)
         clsToken = torch.zeros(1, 1, int(128 / D)).float().cuda()
         clsToken.require_grad = True
         self.clsToken = nn.Parameter(clsToken)
         torch.nn.init.normal_(clsToken, std=0.02)
+
 
     def forward(self, x):
         batch_size = x.shape[0]
@@ -1373,7 +1427,7 @@ class Classifier_RESNET_MH3(nn.Module):
 
 class Classifier_RESNET_FTA1(nn.Module):
 
-    def __init__(self, input_shape, D=1, length=96, ffh=16):
+    def __init__(self, input_shape, D=1,length=96,ffh=16):
         super(Classifier_RESNET_FTA1, self).__init__()
         self.out_shape = int(128 / D)
         self.blk1 = ResBlock1D(input_shape, int(64 / D))
@@ -1382,12 +1436,13 @@ class Classifier_RESNET_FTA1(nn.Module):
         self.AVG = nn.AdaptiveAvgPool1d(1)
         self.FTA0 = FTABlock2(channel=length)
         self.conv1 = BasicBlock1D(inplanes=input_shape, planes=int(128 / D), kernel_size=7, padding=3)
-        self.FTA1 = FTABlock(channel=length, reduction=ffh)
-        self.FTA2 = FTABlock(channel=length, reduction=ffh)
-        self.FTA3 = FTABlock(channel=length, reduction=ffh)
+        self.FTA1 = FTABlock(channel=length,reduction=ffh)
+        self.FTA2 = FTABlock(channel=length,reduction=ffh)
+        self.FTA3 = FTABlock(channel=length,reduction=ffh)
         # self.FTA4 = FTABlock(channel=length)
 
     def forward(self, x):
+
         # x = self.FTA0(x, out)
 
         x = self.blk1(x)
@@ -1402,31 +1457,31 @@ class Classifier_RESNET_FTA1(nn.Module):
         x = self.AVG(x)
         return x
 
-
 class Classifier_RESNET_FTA1_E(nn.Module):
 
-    def __init__(self, input_shape, D=1, length=96):
+    def __init__(self, input_shape, D=1,length=96):
         super(Classifier_RESNET_FTA1_E, self).__init__()
         self.out_shape = int(128 / D)
         self.blk1 = ResBlock1D(input_shape, int(64 / D))
         self.blk2 = ResBlock1D(int(64 / D), int(128 / D))
         self.blk3 = ResBlock1D(int(128 / D), int(128 / D))
         self.AVG = nn.AdaptiveAvgPool1d(1)
-        # self.FTA0 = FTABlock2(channel=length)
+        #self.FTA0 = FTABlock2(channel=length)
         self.conv1 = BasicBlock1D(inplanes=input_shape, planes=int(128 / D), kernel_size=7, padding=3)
-        # self.FTA1 = FTABlock(channel=length)
-        # self.FTA2 = FTABlock(channel=length)
+        #self.FTA1 = FTABlock(channel=length)
+        #self.FTA2 = FTABlock(channel=length)
         self.FTA3 = FTABlock(channel=length)
         # self.FTA4 = FTABlock(channel=length)
 
     def forward(self, x):
+
         # x = self.FTA0(x, out)
 
         x = self.blk1(x)
-        # x = self.FTA1(x)
+        #x = self.FTA1(x)
 
         x = self.blk2(x)
-        # x = self.FTA2(x)
+        #x = self.FTA2(x)
 
         x = self.blk3(x)
         x = self.FTA3(x)
@@ -1434,63 +1489,63 @@ class Classifier_RESNET_FTA1_E(nn.Module):
         x = self.AVG(x)
         return x
 
-
 class Classifier_RESNET_FTA1_B(nn.Module):
 
-    def __init__(self, input_shape, D=1, length=96, ffh=16):
+    def __init__(self, input_shape, D=1,length=96,ffh=16):
         super(Classifier_RESNET_FTA1_B, self).__init__()
         self.out_shape = int(128 / D)
         self.blk1 = ResBlock1D(input_shape, int(64 / D))
         self.blk2 = ResBlock1D(int(64 / D), int(128 / D))
         self.blk3 = ResBlock1D(int(128 / D), int(128 / D))
         self.AVG = nn.AdaptiveAvgPool1d(1)
-        # self.FTA0 = FTABlock2(channel=length)
+        #self.FTA0 = FTABlock2(channel=length)
         self.conv1 = BasicBlock1D(inplanes=input_shape, planes=int(128 / D), kernel_size=7, padding=3)
-        self.FTA1 = FTABlockB(channel=int(64 / D), length=length, reduction=ffh)
-        self.FTA2 = FTABlockB(channel=int(128 / D), length=length, reduction=ffh)
-        self.FTA3 = FTABlockB(channel=int(128 / D), length=length, reduction=ffh)
+        self.FTA1 = FTABlockB(channel=int(64 / D),length=length,reduction=ffh)
+        self.FTA2 = FTABlockB(channel=int(128 / D),length=length,reduction=ffh)
+        self.FTA3 = FTABlockB(channel=int(128 / D),length=length,reduction=ffh)
         # self.FTA4 = FTABlock(channel=length)
 
-    def forward(self, x):
+    def forward(self, x,mask):
+
         # x = self.FTA0(x, out)
 
         x = self.blk1(x)
-        x = self.FTA1(x)
+        x = self.FTA1(x,mask)
 
         x = self.blk2(x)
-        x = self.FTA2(x)
+        x = self.FTA2(x,mask)
 
         x = self.blk3(x)
-        x = self.FTA3(x)
+        x = self.FTA3(x,mask)
 
         x = self.AVG(x)
         return x
 
-
 class Classifier_RESNET_FTA1_B_E(nn.Module):
 
-    def __init__(self, input_shape, D=1, length=96):
+    def __init__(self, input_shape, D=1,length=96):
         super(Classifier_RESNET_FTA1_B_E, self).__init__()
         self.out_shape = int(128 / D)
         self.blk1 = ResBlock1D(input_shape, int(64 / D))
         self.blk2 = ResBlock1D(int(64 / D), int(128 / D))
         self.blk3 = ResBlock1D(int(128 / D), int(128 / D))
         self.AVG = nn.AdaptiveAvgPool1d(1)
-        # self.FTA0 = FTABlock2(channel=length)
+        #self.FTA0 = FTABlock2(channel=length)
         self.conv1 = BasicBlock1D(inplanes=input_shape, planes=int(128 / D), kernel_size=7, padding=3)
-        # self.FTA1 = FTABlock(channel=length)
-        # self.FTA2 = FTABlock(channel=length)
-        self.FTA3 = FTABlockB(channel=int(128 / D), length=length)
+        #self.FTA1 = FTABlock(channel=length)
+        #self.FTA2 = FTABlock(channel=length)
+        self.FTA3 = FTABlockB(channel=int(128 / D),length=length)
         # self.FTA4 = FTABlock(channel=length)
 
     def forward(self, x):
+
         # x = self.FTA0(x, out)
 
         x = self.blk1(x)
-        # x = self.FTA1(x)
+        #x = self.FTA1(x)
 
         x = self.blk2(x)
-        # x = self.FTA2(x)
+        #x = self.FTA2(x)
 
         x = self.blk3(x)
         x = self.FTA3(x)
@@ -1515,7 +1570,7 @@ class Classifier_RESNET_FTA2(nn.Module):
         self.FTA3 = FTABlock(channel=length)
         # self.FTA4 = FTABlock(channel=length)
 
-    def forward(self, x, out):
+    def forward(self, x,out):
         x = self.FTA0(x, out)
 
         x = self.blk1(x)
@@ -1529,3 +1584,61 @@ class Classifier_RESNET_FTA2(nn.Module):
 
         x = self.AVG(x)
         return x
+
+
+class LSTM_FCN(nn.Module):
+    def __init__(self, c_in, c_out, seq_len=None,D=1,mode=0,ffh=16, hidden_size=8, rnn_layers=1, bias=True, cell_dropout=0,
+                 rnn_dropout=0.8, bidirectional=False, shuffle=True,
+                 fc_dropout=0., conv_layers=[128, 256, 128], kss=[7, 5, 3], se=0):
+        super(LSTM_FCN,self).__init__()
+        if shuffle: assert seq_len is not None, 'need seq_len if shuffle=True'
+
+        # RNN
+        self.rnn = nn.LSTM(seq_len if shuffle else c_in, hidden_size, num_layers=rnn_layers, bias=bias,
+                              batch_first=True,
+                              dropout=cell_dropout, bidirectional=bidirectional)
+        self.rnn_dropout = nn.Dropout(rnn_dropout)
+        self.shuffle = shuffle
+        self.mode=mode
+
+        # FCN
+        assert len(conv_layers) == len(kss)
+        self.conv1 = BasicBlock1D(inplanes=c_in, planes=int(128 / D), kernel_size=7, padding=3)
+        self.FTA1 = FTABlockB(channel=int(128 / D), length=seq_len,reduction=ffh)
+
+        self.conv2 = BasicBlock1D(inplanes=int(128 / D), planes=int(256 / D), kernel_size=5, padding=2)
+        self.FTA2 = FTABlockB(channel=int(256 / D), length=seq_len,reduction=ffh)
+
+        self.conv3 = BasicBlock1D(inplanes=int(256 / D), planes=int(128 / D), kernel_size=3, padding=1)
+        self.FTA3 = FTABlockB(channel=int(128 / D), length=seq_len,reduction=ffh)
+
+        self.gap = nn.AdaptiveAvgPool1d(1)
+
+        # Common
+        self.fc_dropout = nn.Dropout(fc_dropout) if fc_dropout else nn.Identity()
+        self.out_shape = hidden_size * (1 + bidirectional) + conv_layers[-1]
+
+    def forward(self, x,mask):
+        # RNN
+        rnn_input = x.permute(0,2,1) if not self.shuffle else x # permute --> (batch_size, seq_len, n_vars) when batch_first=True
+        output, _ = self.rnn(rnn_input)
+        last_out = output[:, -1]  # output of last sequence step (many-to-one)
+        last_out = self.rnn_dropout(last_out)
+
+        # FCN
+        x = self.conv1(x)
+        if self.mode==1:
+            x = self.FTA1(x,mask)
+        x = self.conv2(x)
+        if self.mode == 1:
+            x = self.FTA2(x,mask)
+        x = self.conv3(x)
+        if self.mode == 1:
+            x = self.FTA3(x,mask)
+        if self.mode != 2:
+            x = self.gap(x).squeeze(-1)
+            # Concat
+            x = torch.cat([last_out, x],dim=1)
+            return x
+        else:
+            return x,last_out

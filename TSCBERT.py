@@ -1,17 +1,21 @@
-import math
-from bisect import bisect_left
-from functools import reduce
-
-import torch
 import torch.nn as nn
+import torch
 import torch.nn.functional as F
+import torch
 
-from TimeSeriesClass import BasicBlock1D, ResBlock1D
-from TimeSeriesClass import FTABlock, FTABlockB
+import math
+
+from functools import reduce
+from bisect import bisect_left
+from TimeSeriesClass import BasicBlock1D, ResBlock1D,LSTM_FCN
+import numpy as np
 from inception import InceptionBlock
+from TimeSeriesClass import FTABlock,FTABlockB
+from tupe import TUPEConfig, TUPEEncoder
+from DeBERTa import deberta
+Records={'FC_gama1':None,'FC_gama2':None,'Attn':None,'Attn0':None}
 
-Records = {'FC_gama1': None, 'FC_gama2': None, 'Attn': None, 'Attn0': None}
-
+# from .BERT.embedding import BERTEmbedding
 class LearnedPositionalEmbedding2(nn.Module):
 
     def __init__(self, d_model, max_len=512):
@@ -249,34 +253,31 @@ class MultiHeadedAttentionNeighbor(nn.Module):
                 adj = gau.unsqueeze(0).unsqueeze(0)
                 # attn += adj
 
-            elif self.LrMo == 1:
+            elif self.LrMo==1:
                 query = self.FCgamma(query).contiguous().view(batch_size * self.h, -1)
-                # query = torch.pow(torch.pow(torch.abs(query), self.pow) + 1, -1)
-                query = torch.pow(torch.pow(torch.abs(query) + 1, self.pow),
-                                  -1)  #############################################################removed  +1
+                #query = torch.pow(torch.pow(torch.abs(query), self.pow) + 1, -1)
+                query_o=torch.stack([query,query],dim=-1)
+                query = torch.pow(torch.pow(torch.abs(query)+ 1, self.pow), -1)#############################################################removed  +1
                 query = torch.diag_embed(query)
                 adj = torch.exp(torch.matmul(query, self.dist))
                 # adj=self.normalize(adj, symmetric=False)
                 adj = adj.contiguous().view(batch_size, self.h, self.Max_Len, self.Max_Len)
-                query_o = 0
             elif self.LrMo == 2:
-                query_o = self.FCgamma(query).contiguous().view(batch_size * self.h, self.Max_Len, -1)
-                # query = torch.pow(torch.pow(torch.abs(query), self.pow) + 1, -1)
-                query = torch.pow(torch.pow(torch.abs(query_o) + 1, self.pow),
-                                  -1)  #############################################################removed  +1
-                queryu = torch.diag_embed(query[..., 0])
-                queryl = torch.diag_embed(query[..., 1])
-                adj = torch.exp(torch.matmul(queryl, self.dist.tril(diagonal=-1)) + torch.matmul(queryu, self.dist.triu(
-                    diagonal=0)))
+                query_o = self.FCgamma(query).contiguous().view(batch_size * self.h,self.Max_Len, -1)
+                #query = torch.pow(torch.pow(torch.abs(query), self.pow) + 1, -1)
+                query = torch.pow(torch.pow(torch.abs(query_o)+ 1, self.pow), -1)#############################################################removed  +1
+                queryu = torch.diag_embed(query[...,0])
+                queryl = torch.diag_embed(query[...,1])
+                adj = torch.exp(torch.matmul(queryl, self.dist.tril(diagonal=-1))+torch.matmul(queryu, self.dist.triu(diagonal=0)))
                 # adj=self.normalize(adj, symmetric=False)
                 adj = adj.contiguous().view(batch_size, self.h, self.Max_Len, self.Max_Len)
             elif self.LrMo == 3:
-                adj = 0
-                query_o = 0
+                adj=0
+                query_o=0
         if torch.is_tensor(query_o):
-            Records['FC_gama1'] = query_o[..., 0]
+            Records['FC_gama1'] = query_o[...,0]
             Records['FC_gama2'] = query_o[..., 1]
-            # attn+=adj
+                # attn+=adj
         # attn= (torch.sigmoid(self.lam1)*attn+torch.sigmoid(self.lam2)*adj)/(torch.sigmoid(self.lam1)+torch.sigmoid(self.lam2))
         attn = attn / torch.max(attn, dim=-1)[0].unsqueeze(-1).expand_as(attn)
         Records['Attn0'] = attn
@@ -290,6 +291,7 @@ class MultiHeadedAttentionNeighbor(nn.Module):
         output = output.transpose(1, 2).contiguous().view(batch_size, -1, self.h * self.d_k)
 
         return self.output_linear1(output)
+
 
 
 class LayerNorm(nn.Module):
@@ -443,7 +445,7 @@ class TSCBERT(nn.Module):
             [TSCTransformerBlock(hidden, attn_heads, self.feed_forward_hidden, dropout, max_len, pow, LrEnb, LrMo) for _
              in range(n_layers)])
 
-    def forward(self, input_vectors):
+    def forward(self, input_vectors,mask_in):
         # attention masking for padded token
         # torch.ByteTensor([batch_size, 1, seq_len, seq_len)
         batch_size = input_vectors.shape[0]
@@ -459,6 +461,12 @@ class TSCBERT(nn.Module):
 
         # embedding the indexed sequence to sequence of vectors
         # x = torch.cat((self.clsToken.repeat(batch_size, 1, 1), input_vectors), 1)
+        # print(mask_in.shape)
+        mask_in=mask_in[:,:,0:1].permute(0,2,1)
+        # print(mask_in.shape)
+        # print(mask.shape)
+        mask=mask*mask_in.unsqueeze(-1).expand_as(mask)
+        
         x = input_vectors
         if self.embedding is not None:
             x = self.embedding(x)
@@ -501,28 +509,31 @@ class Classifier_TSCBERT(nn.Module):
             self.embedding = BasicBlock1D(inplanes=input_shape, planes=hidden_size, kernel_size=7, padding=3)
             self.hidden_size = hidden_size
             self.adaD = 2
-
+            
         elif adaD == 3:
             # if input_shape >= hidden_size:
 
-            self.embedding = nn.Sequential(
-                BasicBlock1D(inplanes=input_shape, planes=hidden_size, kernel_size=7, padding=3),
-                BasicBlock1D(inplanes=hidden_size, planes=hidden_size * 2, kernel_size=5, padding=2),
-                BasicBlock1D(inplanes=hidden_size * 2, planes=hidden_size, kernel_size=3, padding=1))
+            self.embedding = nn.Sequential(BasicBlock1D(inplanes=input_shape, planes=hidden_size, kernel_size=7, padding=3),
+                                            BasicBlock1D(inplanes=hidden_size, planes=hidden_size*2, kernel_size=5, padding=2),
+                                            BasicBlock1D(inplanes=hidden_size*2, planes=hidden_size, kernel_size=3, padding=1))
             self.hidden_size = hidden_size
             self.adaD = 2
         elif adaD == 4:
             # if input_shape >= hidden_size:
 
             self.embedding = nn.Sequential(ResBlock1D(input_shape, hidden_size),
-                                           ResBlock1D(hidden_size, hidden_size * 2),
-                                           ResBlock1D(hidden_size * 2, hidden_size * 2))
-            self.hidden_size = hidden_size * 2
+                                            ResBlock1D(hidden_size, hidden_size*2),
+                                            ResBlock1D(hidden_size*2, hidden_size*2))
+            self.hidden_size = hidden_size*2
             self.adaD = 2
             # else:
             #    self.adaD = 0
             #    self.hidden_size = input_shape
-
+        elif adaD == 5:
+            self.embedding = LSTM_FCN(input_shape, None,     seq_len=length, D=1,mode=2)
+            self.adaD = 5
+            self.hidden_size = hidden_size
+            self.out_shape=self.embedding.out_shape
         else:
             self.adaD = 0
             self.hidden_size = input_shape
@@ -536,23 +547,64 @@ class Classifier_TSCBERT(nn.Module):
             self.attn_heads = 1
         self.length = length
         self.n_layers = n_layers
-        self.bert = TSCBERT(self.hidden_size, self.length, hidden=self.hidden_size, n_layers=self.n_layers,
-                            attn_heads=self.attn_heads, device=device, pow=pow, LrEnb=LrEnb, LrMo=LrMo, pos_enc=pos_enc,
-                            ffh=ffh)
-        self.out_shape = self.hidden_size
+        self.LrMo=LrMo
+        if LrMo==4:
+            config = TUPEConfig(
+                                num_layers=self.n_layers,
+                                num_heads=self.attn_heads,
+                                d_model=self.hidden_size,
+                                d_head=self.hidden_size//self.attn_heads,
+                                max_len=self.length,
+                                # dropout=0.1,
+                                # expansion_factor=1,
+                                # relative_bias=True,
+                                # bidirectional_bias=True,
+                                # num_buckets=32,
+                                # max_distance=128
+                            )
+            self.bert = TUPEEncoder(config)
+            # self.sout=1
+        elif LrMo==5:
+            config=deberta.ModelConfig()
+            config=config.from_dict( {"hidden_size":self.hidden_size,
+                                        "num_hidden_layers":self.n_layers,
+                                        "num_attention_heads":self.attn_heads,
+                                        "intermediate_size":self.hidden_size*4,
+                                        "max_position_embeddings":self.length})
+
+
+
+            self.bert = deberta.BertEncoder(config)
+            pass
+        else:
+            self.bert = TSCBERT(self.hidden_size, self.length, hidden=self.hidden_size, n_layers=self.n_layers,
+                                attn_heads=self.attn_heads, device=device, pow=pow, LrEnb=LrEnb, LrMo=LrMo, pos_enc=pos_enc,
+                                ffh=ffh)
+        self.out_shape = self.hidden_size if not self.adaD==5 else self.out_shape
         self.avg = nn.AdaptiveAvgPool1d(1)
 
-    def forward(self, x):
+    def forward(self, x,mask):
 
         x = x.permute(0, 2, 1)
+        mask=mask.permute(0,2,1)
         if self.adaD == 1:
             x = self.embedding(x)
-        elif self.adaD == 2:
+        elif self.adaD ==2:
             x = self.embedding(x.permute(0, 2, 1)).permute(0, 2, 1)
+        elif self.adaD == 5:
+            x,LS_out = self.embedding(x.permute(0, 2, 1),mask.permute(0,2,1))
+            x=x.permute(0, 2, 1)
         input_vectors = x
         norm = input_vectors.norm(p=2, dim=-1, keepdim=True)
         input_vectors = input_vectors.div(norm)
-        output, maskSample = self.bert(input_vectors)
+        if self.LrMo==4:
+            output = self.bert(input_vectors)
+            q=output
+        elif self.LrMo==5:
+            output = self.bert(input_vectors,torch.ones([input_vectors.shape[0],input_vectors.shape[1]],device=input_vectors.device))[0]
+            q=output
+        else:
+            output, maskSample = self.bert(input_vectors,mask)
         # classificationOut = output[:, 0, :]
 
         # sequenceOut = output[:, 1:, :]
@@ -561,7 +613,8 @@ class Classifier_TSCBERT(nn.Module):
         # output = self.dp(classificationOut)
         # x = self.fc_action(output)
         clssificationOut = self.avg(output.transpose(1, 2))
-
+        if self.adaD==5:
+            clssificationOut=torch.cat([LS_out,clssificationOut.squeeze(-1)],dim=1)
         return clssificationOut
 
     def factors(self, n):
@@ -585,18 +638,17 @@ class Classifier_TSCBERT(nn.Module):
             return after
         else:
             return before
-
-
+            
 class Classifier_FCN_MHAne(nn.Module):
 
-    def __init__(self, input_shape, D=1, length=24, device='cuda', pow=2, LrEnb=0, LrMo=0, pos_enc=1, ffh=4):
+    def __init__(self, input_shape, D=1, length=24, device='cuda', pow=2, LrEnb=0, LrMo=0,pos_enc=1, ffh=4):
         super(Classifier_FCN_MHAne, self).__init__()
 
         self.input_shape = input_shape
         self.out_shape = int(128 / D)
         self.mask_prob = 0.5
-        self.max_len = length
-        self.device = device
+        self.max_len=length
+        self.device=device
         if pos_enc == 1:
             self.embedding = BERTEmbedding(input_dim=input_shape, max_len=length)
         elif pos_enc == 2:
@@ -606,14 +658,15 @@ class Classifier_FCN_MHAne(nn.Module):
         elif pos_enc == 0:
             self.embedding = None
 
+
         self.conv1 = BasicBlock1D(inplanes=input_shape, planes=int(128 / D), kernel_size=7, padding=3)
-        self.FTA1 = TSCTransformerBlock(int(128 / D), 1, int(128 / D) * ffh, 0.4, length, pow, LrEnb, LrMo)
+        self.FTA1 = TSCTransformerBlock(int(128 / D), 1, int(128 / D)*ffh, 0.4, length, pow, LrEnb, LrMo)
 
         self.conv2 = BasicBlock1D(inplanes=int(128 / D), planes=int(256 / D), kernel_size=5, padding=2)
-        self.FTA2 = TSCTransformerBlock(int(256 / D), 1, int(256 / D) * ffh, 0.4, length, pow, LrEnb, LrMo)
+        self.FTA2 = TSCTransformerBlock(int(256 / D), 1, int(256 / D)*ffh, 0.4, length, pow, LrEnb, LrMo)
 
         self.conv3 = BasicBlock1D(inplanes=int(256 / D), planes=int(128 / D), kernel_size=3, padding=1)
-        self.FTA3 = TSCTransformerBlock(int(128 / D), 1, int(128 / D) * ffh, 0.4, length, pow, LrEnb, LrMo)
+        self.FTA3 = TSCTransformerBlock(int(128 / D), 1, int(128 / D)*ffh, 0.4, length, pow, LrEnb, LrMo)
 
         self.AVG = nn.AdaptiveAvgPool1d(1)
 
@@ -631,47 +684,49 @@ class Classifier_FCN_MHAne(nn.Module):
         if self.embedding is not None:
             x = self.embedding(x.permute(0, 2, 1)).permute(0, 2, 1)
         x = self.conv1(x)
-        x = self.FTA1(x.permute(0, 2, 1), mask).permute(0, 2, 1)
+        x = self.FTA1(x.permute(0, 2, 1),mask).permute(0, 2, 1)
         x = self.conv2(x)
-        x = self.FTA2(x.permute(0, 2, 1), mask).permute(0, 2, 1)
+        x = self.FTA2(x.permute(0, 2, 1),mask).permute(0, 2, 1)
         x = self.conv3(x)
-        x = self.FTA3(x.permute(0, 2, 1), mask).permute(0, 2, 1)
+        x = self.FTA3(x.permute(0, 2, 1),mask).permute(0, 2, 1)
         x = self.AVG(x)
         return x
-
-
+        
 class Inception_TBO(InceptionBlock):
-    def __init__(self, in_channels, type, length, device='cuda', pow=2, LrEnb=0, LrMo=0, pos_enc=1, ffh=4, n_filters=32,
-                 **kwargs):
-        super(Inception_TBO, self).__init__(in_channels, n_filters, **kwargs)
-        self.device = device
+    def __init__(self,in_channels,type, length,device='cuda', pow=2, LrEnb=0, LrMo=0,pos_enc=1, ffh=4,n_filters=32, **kwargs):
+        super(Inception_TBO, self).__init__(in_channels,n_filters,**kwargs)
+        self.device=device
         if pos_enc == 1:
-            self.embedding = BERTEmbedding(input_dim=in_channels if not type == 8 else 4 * n_filters, max_len=length)
+            self.embedding = BERTEmbedding(input_dim=in_channels if not (type==8 or type==9) else 4*n_filters, max_len=length)
         elif pos_enc == 2:
-            self.embedding = BERTEmbedding2(input_dim=in_channels if not type == 8 else 4 * n_filters, max_len=length)
+            self.embedding = BERTEmbedding2(input_dim=in_channels if not (type==8 or type==9) else 4*n_filters, max_len=length)
         elif pos_enc == 3:
-            self.embedding = BERTEmbedding3(input_dim=in_channels if not type == 8 else 4 * n_filters, max_len=length)
+            self.embedding = BERTEmbedding3(input_dim=in_channels if not (type==8 or type==9) else 4*n_filters, max_len=length)
         elif pos_enc == 0:
             self.embedding = None
 
-        if type == 1 or type == 4:
-            self.FTA1 = FTABlock(channel=length, reduction=ffh) if type == 1 else None
-            self.FTA2 = FTABlock(channel=length, reduction=ffh) if type == 1 else None
-            self.FTA3 = FTABlock(channel=length, reduction=ffh)
-            self.type = 25 if type == 1 else 5
-        elif type == 2 or type == 5:
-            self.FTA1 = FTABlockB(channel=4 * n_filters, length=length, reduction=ffh) if type == 2 else None
-            self.FTA2 = FTABlockB(channel=4 * n_filters, length=length, reduction=ffh) if type == 2 else None
-            self.FTA3 = FTABlockB(channel=4 * n_filters, length=length, reduction=ffh)
-            self.type = 25 if type == 2 else 5
-        elif type == 3 or type == 6 or type == 8:
-            self.FTA1 = TSCTransformerBlock(4 * n_filters, 1, 4 * n_filters * ffh, 0.4, length, pow, LrEnb,
-                                            LrMo) if type == 3 else None
-            self.FTA2 = TSCTransformerBlock(4 * n_filters, 1, 4 * n_filters * ffh, 0.4, length, pow, LrEnb,
-                                            LrMo) if type == 3 else None
-            self.FTA3 = TSCTransformerBlock(4 * n_filters, 1, 4 * n_filters * ffh, 0.4, length, pow, LrEnb, LrMo)
-            self.type = 2 if type == 3 else 4
-            self.type = 8 if type == 8 else self.type
+
+        if type==1 or type==4:
+            self.FTA1 = FTABlock(channel=length,reduction=ffh) if type==1 else None
+            self.FTA2 = FTABlock(channel=length,reduction=ffh) if type==1 else None
+            self.FTA3 = FTABlock(channel=length,reduction=ffh)
+            self.type = 25 if type==1 else 5
+        elif type==2  or type==5 or type==9:
+            self.FTA1 = FTABlockB(channel=4*n_filters, length=length,reduction=ffh) if (type==2 or type==9) else None
+            self.FTA2 = FTABlockB(channel=4*n_filters, length=length,reduction=ffh) if (type==2 or type==9) else None
+            self.FTA3 = FTABlockB(channel=4*n_filters, length=length,reduction=ffh)
+            self.type = 25 if type==2 else 5
+            if type==9:
+                
+                self.FTA4 = TSCTransformerBlock(4*n_filters, 1, n_filters * ffh, 0.4, length, pow, LrEnb, LrMo)
+                self.type=50
+                
+        elif type==3 or type==6 or type==8:
+            self.FTA1 = TSCTransformerBlock(4*n_filters, 1, 4*n_filters * ffh, 0.4, length, pow, LrEnb, LrMo) if type==3 else None
+            self.FTA2 = TSCTransformerBlock(4*n_filters, 1, 4*n_filters * ffh, 0.4, length, pow, LrEnb, LrMo) if type==3 else None
+            self.FTA3 = TSCTransformerBlock(4*n_filters, 1, 4*n_filters * ffh, 0.4, length, pow, LrEnb, LrMo)
+            self.type = 2 if type==3 else 4
+            self.type = 8 if type==8 else self.type
 
         # elif type==4:
         #     self.FTA3 = TSCTransformerBlock(4 * n_filters, 1, 4 * n_filters * ffh, 0.4, length, pow, LrEnb, LrMo)
@@ -679,15 +734,16 @@ class Inception_TBO(InceptionBlock):
         else:
             self.type = 7
         self.AVG = nn.AdaptiveAvgPool1d(1)
-        self.out_shape = 4 * n_filters
-        self.mask_prob = 0.5
-        self.max_len = length
-
-    def forward(self, X):
-        if not (self.type == 7 or self.type == 8):
+        self.out_shape=4*n_filters
+        self.mask_prob=0.5
+        self.max_len=length
+    def forward(self, X,mask_in):
+        mask_in2=mask_in[:,0:1,:].unsqueeze(-1)
+        
+        if not (self.type==7 or self.type==8 or self.type==50):
             if self.embedding is not None:
-                Z = self.embedding(X.transpose(1, 2)).transpose(1, 2)
-        if self.type % 2 == 0:
+                Z=self.embedding(X.transpose(1,2)).transpose(1,2)
+        if self.type%2==0:
             batch_size = X.shape[0]
             sample = None
             if self.training:
@@ -698,50 +754,54 @@ class Inception_TBO(InceptionBlock):
                 mask = (sample > 0).unsqueeze(1).repeat(1, sample.size(1), 1).unsqueeze(1)
             else:
                 mask = torch.ones(batch_size, 1, self.max_len, self.max_len).to(self.device)
-
+            mask=mask*mask_in2.expand_as(mask)
         if self.return_indices:
-            Z, i1 = self.inception_1(X if self.type == 0 else Z)
-            if self.type % 25 == 0:
-                Z = self.FTA1(Z)
-            elif self.type == 2:
+            Z, i1 = self.inception_1(X if self.type==0 else Z)
+            if self.type%25==0:
+                Z = self.FTA1(Z,mask_in)
+            elif self.type==2:
                 Z = self.FTA1(Z.permute(0, 2, 1), mask).permute(0, 2, 1)
 
             Z, i2 = self.inception_2(Z)
-            if self.type % 25 == 0:
-                Z = self.FTA2(Z)
-            elif self.type == 2:
+            if self.type%25==0:
+                Z = self.FTA2(Z,mask_in)
+            elif self.type==2:
                 Z = self.FTA2(Z.permute(0, 2, 1), mask).permute(0, 2, 1)
 
             Z, i3 = self.inception_3(Z)
-            if self.type % 5 == 0:
-                Z = self.FTA3(Z)
+            if self.type%5==0:
+                Z = self.FTA3(Z,mask_in)
             elif self.type == 2 or self.type == 4:
                 Z = self.FTA3(Z.permute(0, 2, 1), mask).permute(0, 2, 1)
         else:
             Z = self.inception_1(X)
-            if self.type % 25 == 0:
-                Z = self.FTA2(Z)
-            elif self.type == 2:
+            if self.type%25==0:
+                Z = self.FTA2(Z,mask_in)
+            elif self.type==2:
                 Z = self.FTA2(Z.permute(0, 2, 1), mask).permute(0, 2, 1)
             Z = self.inception_2(Z)
-            if self.type % 25 == 0:
-                Z = self.FTA2(Z)
-            elif self.type == 2:
+            if self.type%25==0:
+                Z = self.FTA2(Z,mask_in)
+            elif self.type==2:
                 Z = self.FTA2(Z.permute(0, 2, 1), mask).permute(0, 2, 1)
             Z = self.inception_3(Z)
-            if self.type % 5 == 0:
-                Z = self.FTA3(Z)
+            if self.type%5==0:
+                Z = self.FTA3(Z,mask_in)
             elif self.type == 2 or self.type == 4:
                 Z = self.FTA3(Z.permute(0, 2, 1), mask).permute(0, 2, 1)
         if self.use_residual:
             Z = Z + self.residual(X)
             Z = self.activation(Z)
-        if self.type % 8 == 0:
+        if self.type%8==0:
             if self.embedding is not None:
-                Z = self.embedding(Z.transpose(1, 2)).transpose(1, 2)
+                Z=self.embedding(Z.transpose(1,2)).transpose(1,2)
             Z = self.FTA3(Z.permute(0, 2, 1), mask).permute(0, 2, 1)
+        if self.type==50:
+            if self.embedding is not None:
+                Z=self.embedding(Z.transpose(1,2)).transpose(1,2)
+            Z = self.FTA4(Z.permute(0, 2, 1), mask).permute(0, 2, 1)
 
-        Z = self.AVG(Z)
+        Z=self.AVG(Z)
         if self.return_indices:
             return Z, [i1, i2, i3]
         else:
