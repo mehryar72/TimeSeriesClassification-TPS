@@ -1,19 +1,18 @@
-Code for :
+# Enhancing Multivariate Time Series Classifiers Through Self-Attention and Relative Positioning Infusion
 
-Temporal Attention Block for Augmenting Deep Multivariate Time Series Classification
+This repository contains the code for the paper "Enhancing Multivariate Time Series Classifiers Through Self-Attention and Relative Positioning Infusion" by Mehryar Abbasi and Parvaneh Saeedi, published in IEEE Access, 2024.
 
-python 3.6
-torch 1.2.0
-####################################
+## Requirements
+- python 3.6
+- torch 1.2.0
 
-UEA Benchmark for "Global Temporal Attention block" and "Temporal Pseudo-Gaussian augmented Self-attention"
-UEA archive should be extracted in "Multivariate_ts" folder, sktime ts format.
+## Dataset
+UEA Benchmark for "Global Temporal Attention block" and "Temporal Pseudo-Gaussian augmented Self-attention". UEA archive should be extracted in "Multivariate_ts" folder, sktime ts format.
 
+## Usage
+Run `ueatrain.py` with the following the specified arguments for different models.
 
-###########################
-Run ueatrain.py with the following the specified arguments for different models.
-
-###########################
+### Models
 
     FCN               :        mode=1,   ffh=16
     FCN + GTA         :        mode=301, ffh=16
@@ -43,9 +42,9 @@ Run ueatrain.py with the following the specified arguments for different models.
     non TPS-----------
     pos_enc=0
     -------------
-############################
 
-set no between 0 t0 29 for specific dataset.
+### Datasets
+Set number between 0 to 29 for specific dataset.
 
     ArticularyWordRecognition
     AtrialFibrillation
@@ -78,6 +77,16 @@ set no between 0 t0 29 for specific dataset.
     StandWalkJump
     UWaveGestureLibrary
 
-##############################
+Set `--JobId` to different numbers every run and average the results.
 
-set --JobId to different numbers every run and average the results.
+## Citation
+If you find this code useful in your research, please consider citing:
+
+```bibtex
+@article{abbasi2024enhancing,
+  title={Enhancing multivariate time series classifiers through self-attention and relative positioning infusion},
+  author={Abbasi, Mehryar and Saeedi, Parvaneh},
+  journal={IEEE Access},
+  year={2024},
+  publisher={IEEE}
+}
